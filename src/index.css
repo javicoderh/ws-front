@@ -1,0 +1,52 @@
+:root {
+  --color-bg: #0b1020;
+  --color-bg-soft: #141b32;
+  --color-surface: #11172a;
+  --color-surface-elev: #1a213a;
+  --color-primary: #3d6df0;
+  --color-primary-strong: #5f84ff;
+  --color-accent: #16c4a4;
+  --color-text: #e9eefc;
+  --color-text-soft: #a7b3d3;
+  --color-border: #2a3558;
+  --color-danger: #ff7d7d;
+  --color-danger-bg: #3a1f2a;
+  --color-danger-border: #7e3d51;
+  font-family: 'Space Grotesk', 'Avenir Next', 'Manrope', 'Segoe UI', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--color-text);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(1200px 700px at 10% -15%, #253a74 0%, transparent 55%),
+    radial-gradient(900px 600px at 100% 0%, #133e4d 0%, transparent 50%),
+    linear-gradient(160deg, #060913 0%, var(--color-bg) 65%, #070b17 100%);
+}
+
+a {
+  color: var(--color-primary-strong);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
