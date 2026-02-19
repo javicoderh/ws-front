@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
 import { AuthScreen } from './components/AuthScreen'
 import { DashboardScreen } from './components/DashboardScreen'
 import { GenerationStatusScreen } from './components/GenerationStatusScreen'
 import { HelperStepperScreen } from './components/HelperStepperScreen'
+import { LandingScreen } from './components/LandingScreen'
 import { ProfileScreen } from './components/ProfileScreen'
 import { TokenPurchaseScreen } from './components/TokenPurchaseScreen'
 import { WorkshopDetailScreen } from './components/WorkshopDetailScreen'
@@ -14,18 +17,7 @@ import { useHelper } from './context/HelperContext'
 import { useTokens } from './context/TokensContext'
 import { useWorkshops } from './context/WorkshopsContext'
 import type { GenericRecord, Profile, WorkshopRecord } from './types/backend'
-import { getErrorCode } from './utils/backendErrors'
-import { formatBackendError } from './utils/backendErrors'
-
-type Screen =
-  | 'auth'
-  | 'profile'
-  | 'dashboard'
-  | 'tokens'
-  | 'helper'
-  | 'generation'
-  | 'history'
-  | 'detail'
+import { formatBackendError, getErrorCode } from './utils/backendErrors'
 
 type DashboardNotice = 'continue_session' | 'no_credits' | null
 
@@ -56,20 +48,58 @@ function parseProfile(payload: unknown): Profile | null {
   }
 }
 
+function ProtectedRoute({ isAuthenticated, children }: { isAuthenticated: boolean; children: ReactNode }) {
+  if (!isAuthenticated) {
+    return <Navigate to="/auth" replace />
+  }
+  return children
+}
+
 function App() {
   const { request } = useApiClient()
   const auth = useAuth()
   const tokens = useTokens()
   const helper = useHelper()
   const workshops = useWorkshops()
+  const navigate = useNavigate()
+  const location = useLocation()
 
-  const [screen, setScreen] = useState<Screen>('auth')
   const [selectedWorkshop, setSelectedWorkshop] = useState<WorkshopRecord | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [dashboardNotice, setDashboardNotice] = useState<DashboardNotice>(null)
   const [pendingHelperSessionId, setPendingHelperSessionId] = useState<string | null>(null)
+
+  const generatedWorkshops = useMemo(() => {
+    const isGenerated = (item: WorkshopRecord) => {
+      const status = (item.status ?? '').toLowerCase()
+      return status === 'done' || status === 'completed' || status === 'finished'
+    }
+
+    const combined = [...workshops.list, ...workshops.history].filter(isGenerated)
+    const byKey = new Map<string, WorkshopRecord>()
+
+    for (const item of combined) {
+      const raw = asRecord(item.raw)
+      const workshopId = typeof raw.workshopId === 'string' ? raw.workshopId : ''
+      const fallbackTitle = item.title.trim().toLowerCase()
+      const key = workshopId || fallbackTitle || item.id
+      const currentEpoch = item.updatedAtEpoch ?? item.createdAtEpoch ?? 0
+      const previous = byKey.get(key)
+      const previousEpoch = previous ? (previous.updatedAtEpoch ?? previous.createdAtEpoch ?? 0) : -1
+
+      if (!previous || currentEpoch >= previousEpoch) {
+        byKey.set(key, item)
+      }
+    }
+
+    return Array.from(byKey.values()).sort((a, b) => {
+      const aEpoch = a.updatedAtEpoch ?? a.createdAtEpoch ?? 0
+      const bEpoch = b.updatedAtEpoch ?? b.createdAtEpoch ?? 0
+      return bEpoch - aEpoch
+    })
+  }, [workshops.history, workshops.list])
 
   const loadProfile = async () => {
     if (!auth.idToken) {
@@ -90,7 +120,7 @@ function App() {
       const code = getErrorCode(err)
       if (code === 'USER_PROFILE_NOT_FOUND') {
         setProfile(null)
-        setScreen('profile')
+        navigate('/profile')
         return null
       }
       const message = formatBackendError(err, 'No se pudo cargar perfil')
@@ -130,7 +160,7 @@ function App() {
       const parsed = parseProfile(payload)
       setProfile(parsed)
       await tokens.refreshBalance()
-      setScreen('dashboard')
+      navigate('/dashboard')
     } catch (err) {
       const message = formatBackendError(err, 'No se pudo guardar perfil')
       setProfileError(message)
@@ -142,17 +172,18 @@ function App() {
 
   useEffect(() => {
     if (!auth.isAuthenticated) {
-      setScreen('auth')
       helper.reset()
       setProfile(null)
+      setDashboardNotice(null)
+      setPendingHelperSessionId(null)
       return
     }
 
-    if (screen === 'auth') {
+    if (location.pathname === '/auth') {
       void loadProfile()
         .then((p) => {
           if (p) {
-            setScreen('dashboard')
+            navigate('/dashboard', { replace: true })
             return tokens.refreshBalance()
           }
           return Promise.resolve()
@@ -161,10 +192,10 @@ function App() {
           // Errors visible through context states.
         })
     }
-  }, [auth.isAuthenticated, helper, screen, tokens]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [auth.isAuthenticated, location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
+    const params = new URLSearchParams(location.search)
     const paymentSessionId = params.get('paymentSessionId') ?? params.get('payment_session_id')
     const hasPaymentReturnSignal =
       Boolean(paymentSessionId) ||
@@ -180,15 +211,15 @@ function App() {
       .confirmCheckout(paymentSessionId ?? undefined)
       .then(() => tokens.refreshBalance())
       .then(() => {
-        setScreen('dashboard')
+        navigate('/dashboard', { replace: true })
       })
       .catch(() => {
         // Error visible through tokens context.
       })
-  }, [auth.isAuthenticated, tokens])
+  }, [auth.isAuthenticated, location.search, navigate, tokens])
 
   useEffect(() => {
-    if (screen !== 'generation' || !helper.jobId) {
+    if (location.pathname !== '/generation' || !helper.jobId) {
       return
     }
 
@@ -201,7 +232,47 @@ function App() {
     tick()
     const id = window.setInterval(tick, 3000)
     return () => window.clearInterval(id)
-  }, [helper, screen])
+  }, [helper, location.pathname])
+
+  useEffect(() => {
+    if (location.pathname !== '/dashboard' || !auth.isAuthenticated) {
+      return
+    }
+    void Promise.all([
+      helper.loadUserSessions(),
+      helper.loadMyEscalatedCases(),
+      workshops.loadList(),
+      workshops.loadHistory(),
+    ]).catch(() => {
+      // Error visible through helper/workshops context.
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    auth.isAuthenticated,
+    helper.loadMyEscalatedCases,
+    helper.loadUserSessions,
+    location.pathname,
+    workshops.loadHistory,
+    workshops.loadList,
+  ])
+
+  useEffect(() => {
+    if (location.pathname !== '/helper' || !auth.isAuthenticated) {
+      return
+    }
+    if (helper.loading) {
+      return
+    }
+    if (helper.state) {
+      return
+    }
+    if (!helper.sessionId) {
+      return
+    }
+    void helper.loadState(helper.sessionId).catch(() => {
+      // Error visible through helper context.
+    })
+  }, [auth.isAuthenticated, helper, location.pathname])
 
   const globalError = useMemo(() => {
     return auth.error ?? profileError ?? tokens.error ?? helper.error ?? workshops.error ?? null
@@ -224,7 +295,7 @@ function App() {
       }
 
       await helper.loadState(started.sessionId)
-      setScreen('helper')
+      navigate('/helper')
     } catch (error) {
       const code = getErrorCode(error)
       if (code === 'WORKSHOP_TOKENS_INSUFFICIENT') {
@@ -242,19 +313,17 @@ function App() {
             return
           }
           await helper.loadState(startedAfterTopup.sessionId)
-          setScreen('helper')
+          navigate('/helper')
           return
         } catch {
           setDashboardNotice('no_credits')
           return
         }
-        setDashboardNotice('no_credits')
-        return
       }
       if (code === 'WORKSHOP_HELPER_FORBIDDEN') {
         auth.logout()
         helper.reset()
-        setScreen('auth')
+        navigate('/auth')
       }
     }
   }
@@ -262,189 +331,283 @@ function App() {
   const handleFinalize = async () => {
     await helper.finalizeSession()
     await Promise.all([helper.loadJobStatus(), helper.loadQueueStatus()])
-    setScreen('generation')
+    navigate('/generation')
   }
 
-  if (screen === 'auth') {
-    return (
-      <AuthScreen
-        loading={auth.loading}
-        error={auth.error}
-        onLogin={auth.loginEmail}
-        onSignup={auth.signupEmail}
-        onGoogleLogin={auth.loginGoogle}
-        onForgotPassword={auth.forgotPassword}
-      />
-    )
+  const handleLandingStart = async () => {
+    if (!auth.isAuthenticated) {
+      navigate('/auth')
+      return
+    }
+    await handleStartHelper()
   }
 
-  if (screen === 'profile') {
-    return (
-      <ProfileScreen
-        profile={profile}
-        loading={profileLoading}
-        error={globalError}
-        onSubmit={upsertProfile}
-        onRefresh={async () => {
-          await loadProfile()
-        }}
-        onBack={() => setScreen('dashboard')}
-      />
-    )
-  }
-
-  if (screen === 'dashboard') {
-    return (
-      <DashboardScreen
-        balance={tokens.balance}
-        loading={tokens.loading || helper.loading}
-        error={globalError}
-        noticeMessage={
-          dashboardNotice === 'continue_session'
-            ? 'Tienes una sesion de helper en curso.'
-            : dashboardNotice === 'no_credits'
-              ? 'No tienes creditos para crear un workshop. Para comprar creditos presiona aca.'
-              : null
+  return (
+    <Routes>
+      <Route
+        path="/"
+        element={
+          <LandingScreen
+            loading={auth.loading || helper.loading}
+            isAuthenticated={auth.isAuthenticated}
+            onStartCreation={handleLandingStart}
+            onGoAuth={() => navigate(auth.isAuthenticated ? '/dashboard' : '/auth')}
+          />
         }
-        noticePrimaryLabel={
-          dashboardNotice === 'continue_session'
-            ? 'Continuar sesion'
-            : dashboardNotice === 'no_credits'
-              ? 'Comprar creditos'
-              : null
+      />
+
+      <Route
+        path="/auth"
+        element={
+          <AuthScreen
+            loading={auth.loading}
+            error={auth.error}
+            onLogin={auth.loginEmail}
+            onSignup={auth.signupEmail}
+            onGoogleLogin={auth.loginGoogle}
+            onForgotPassword={auth.forgotPassword}
+          />
         }
-        noticeSecondaryLabel={dashboardNotice === 'continue_session' ? 'Cerrar' : null}
-        onRefresh={tokens.refreshBalance}
-        onStartHelper={handleStartHelper}
-        onNoticePrimary={async () => {
-          if (dashboardNotice === 'continue_session') {
-            const target = pendingHelperSessionId ?? helper.sessionId
-            if (!target) {
-              setDashboardNotice(null)
-              return
-            }
-            await helper.loadState(target)
-            setDashboardNotice(null)
-            setPendingHelperSessionId(null)
-            setScreen('helper')
-            return
-          }
-          if (dashboardNotice === 'no_credits') {
-            setDashboardNotice(null)
-            setScreen('tokens')
-          }
-        }}
-        onNoticeSecondary={() => {
-          setDashboardNotice(null)
-          setPendingHelperSessionId(null)
-        }}
-        onGoPurchase={() => setScreen('tokens')}
-        onGoProfile={() => {
-          void loadProfile().then(() => setScreen('profile'))
-        }}
-        onGoHistory={() => {
-          void Promise.all([workshops.loadHistory(), workshops.loadList()]).then(() => setScreen('history'))
-        }}
-        onChangePassword={async () => {
-          const nextPassword = window.prompt('Nueva contrasena (min 6):')
-          if (!nextPassword) return
-          await auth.changePassword(nextPassword)
-        }}
-        onLogout={() => {
-          auth.logout()
-          helper.reset()
-          setScreen('auth')
-        }}
       />
-    )
-  }
 
-  if (screen === 'tokens') {
-    return (
-      <TokenPurchaseScreen
-        packs={tokens.packs}
-        unitPriceClp={tokens.pricing?.unitPriceClp ?? null}
-        unitPriceUsd={tokens.pricing?.unitPriceUsd ?? null}
-        loading={tokens.loading}
-        error={globalError}
-        onBack={() => setScreen('dashboard')}
-        onLoadPacks={tokens.loadTokenPacks}
-        onLoadPricing={tokens.loadPricing}
-        onLoadHistory={tokens.loadHistory}
-        onLoadPurchaseHistory={tokens.loadPurchaseHistory}
-        onStartCheckout={tokens.startCheckout}
-        onConfirmCheckout={async () => {
-          await tokens.confirmCheckout()
-          await tokens.refreshBalance()
-          setScreen('dashboard')
-        }}
+      <Route
+        path="/profile"
+        element={
+          <ProtectedRoute isAuthenticated={auth.isAuthenticated}>
+            <ProfileScreen
+              profile={profile}
+              loading={profileLoading}
+              error={globalError}
+              onSubmit={upsertProfile}
+              onRefresh={async () => {
+                await loadProfile()
+              }}
+              onBack={() => navigate('/dashboard')}
+            />
+          </ProtectedRoute>
+        }
       />
-    )
-  }
 
-  if (screen === 'helper') {
-    return (
-      <HelperStepperScreen
-        helperState={helper.state}
-        loading={helper.loading}
-        error={globalError}
-        onRefresh={async () => {
-          await helper.loadState()
-        }}
-        onAnswer={async (stepId, answer) => {
-          await helper.answerStep(stepId, answer)
-        }}
-        onEditStep={async (stepId) => {
-          await helper.editStep(stepId)
-        }}
-        onFinalize={handleFinalize}
-        onBack={() => setScreen('dashboard')}
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute isAuthenticated={auth.isAuthenticated}>
+            <DashboardScreen
+              balance={tokens.balance}
+              helperSessions={helper.userSessions}
+              escalatedCases={helper.myEscalatedCases}
+              generatedWorkshops={generatedWorkshops}
+              loading={tokens.loading || helper.loading}
+              error={globalError}
+              noticeMessage={
+                dashboardNotice === 'continue_session'
+                  ? 'Tienes una sesion de helper en curso.'
+                  : dashboardNotice === 'no_credits'
+                    ? 'No tienes creditos para crear un workshop. Para comprar creditos presiona aca.'
+                    : null
+              }
+              noticePrimaryLabel={
+                dashboardNotice === 'continue_session'
+                  ? 'Continuar sesion'
+                  : dashboardNotice === 'no_credits'
+                    ? 'Comprar creditos'
+                    : null
+              }
+              noticeSecondaryLabel={dashboardNotice === 'continue_session' ? 'Cerrar' : null}
+              onRefresh={tokens.refreshBalance}
+              onStartHelper={handleStartHelper}
+              onOpenSession={async (targetSessionId) => {
+                await helper.loadState(targetSessionId)
+                navigate('/helper')
+              }}
+              onNoticePrimary={async () => {
+                if (dashboardNotice === 'continue_session') {
+                  const target = pendingHelperSessionId ?? helper.sessionId
+                  if (!target) {
+                    setDashboardNotice(null)
+                    return
+                  }
+                  await helper.loadState(target)
+                  setDashboardNotice(null)
+                  setPendingHelperSessionId(null)
+                  navigate('/helper')
+                  return
+                }
+                if (dashboardNotice === 'no_credits') {
+                  setDashboardNotice(null)
+                  navigate('/tokens')
+                }
+              }}
+              onNoticeSecondary={() => {
+                setDashboardNotice(null)
+                setPendingHelperSessionId(null)
+              }}
+              onGoPurchase={() => navigate('/tokens')}
+              onGoProfile={() => {
+                void loadProfile().then(() => navigate('/profile'))
+              }}
+              onGoHistory={() => {
+                void Promise.all([workshops.loadHistory(), workshops.loadList()]).then(() =>
+                  navigate('/history'),
+                )
+              }}
+              onChangePassword={async () => {
+                const nextPassword = window.prompt('Nueva contrasena (min 6):')
+                if (!nextPassword) return
+                await auth.changePassword(nextPassword)
+              }}
+              onLogout={() => {
+                auth.logout()
+                helper.reset()
+                navigate('/')
+              }}
+            />
+          </ProtectedRoute>
+        }
       />
-    )
-  }
 
-  if (screen === 'generation') {
-    return (
-      <GenerationStatusScreen
-        jobId={helper.jobId}
-        jobStatus={helper.jobStatus}
-        queueStatus={helper.queueStatus}
-        loading={helper.loading}
-        error={globalError}
-        onRefresh={async () => {
-          await Promise.all([helper.loadJobStatus(), helper.loadQueueStatus(), helper.loadMetrics()])
-        }}
-        onBackDashboard={() => setScreen('dashboard')}
-        onGoHistory={() => {
-          void Promise.all([workshops.loadHistory(), workshops.loadList()]).then(() => setScreen('history'))
-        }}
+      <Route
+        path="/tokens"
+        element={
+          <ProtectedRoute isAuthenticated={auth.isAuthenticated}>
+            <TokenPurchaseScreen
+              packs={tokens.packs}
+              unitPriceClp={tokens.pricing?.unitPriceClp ?? null}
+              unitPriceUsd={tokens.pricing?.unitPriceUsd ?? null}
+              loading={tokens.loading}
+              error={globalError}
+              onBack={() => navigate('/dashboard')}
+              onLoadPacks={tokens.loadTokenPacks}
+              onLoadPricing={tokens.loadPricing}
+              onLoadHistory={tokens.loadHistory}
+              onLoadPurchaseHistory={tokens.loadPurchaseHistory}
+              onStartCheckout={tokens.startCheckout}
+              onConfirmCheckout={async () => {
+                await tokens.confirmCheckout()
+                await tokens.refreshBalance()
+                navigate('/dashboard')
+              }}
+            />
+          </ProtectedRoute>
+        }
       />
-    )
-  }
 
-  if (screen === 'history') {
-    return (
-      <WorkshopHistoryScreen
-        history={[...workshops.history, ...workshops.list]}
-        loading={workshops.loading}
-        error={globalError}
-        onBack={() => setScreen('dashboard')}
-        onRefresh={async () => {
-          await Promise.all([workshops.loadHistory(), workshops.loadList()])
-        }}
-        onSelect={(workshop) => {
-          setSelectedWorkshop(workshop)
-          setScreen('detail')
-        }}
+      <Route
+        path="/helper"
+        element={
+          <ProtectedRoute isAuthenticated={auth.isAuthenticated}>
+            <HelperStepperScreen
+              helperState={helper.state}
+              loading={helper.loading}
+              error={globalError}
+              onRefresh={async () => {
+                await helper.loadState()
+              }}
+              onAnswer={async (stepId, answer) => {
+                await helper.answerStep(stepId, answer)
+              }}
+              onEditStep={async (stepId) => {
+                await helper.editStep(stepId)
+              }}
+              onFinalize={handleFinalize}
+              onBack={() => navigate('/dashboard')}
+            />
+          </ProtectedRoute>
+        }
       />
-    )
-  }
 
-  if (screen === 'detail' && selectedWorkshop) {
-    return <WorkshopDetailScreen workshop={selectedWorkshop} onBack={() => setScreen('history')} />
-  }
+      <Route
+        path="/generation"
+        element={
+          <ProtectedRoute isAuthenticated={auth.isAuthenticated}>
+            <GenerationStatusScreen
+              jobId={helper.jobId}
+              jobStatus={helper.jobStatus}
+              queueStatus={helper.queueStatus}
+              loading={helper.loading}
+              error={globalError}
+              onRefresh={async () => {
+                await Promise.all([helper.loadJobStatus(), helper.loadQueueStatus(), helper.loadMetrics()])
+              }}
+              onResumeFromFailedJob={async () => {
+                const failedJobId = helper.jobStatus?.job.jobId ?? helper.jobId
+                if (!failedJobId) {
+                  return
+                }
+                await helper.resumeFailedJob(failedJobId)
+                navigate('/helper')
+              }}
+              onBackDashboard={() => navigate('/dashboard')}
+              onGoHistory={() => {
+                void Promise.all([workshops.loadHistory(), workshops.loadList()]).then(() =>
+                  navigate('/history'),
+                )
+              }}
+            />
+          </ProtectedRoute>
+        }
+      />
 
-  return null
+      <Route
+        path="/history"
+        element={
+          <ProtectedRoute isAuthenticated={auth.isAuthenticated}>
+            <WorkshopHistoryScreen
+              history={workshops.history}
+              loading={workshops.loading}
+              error={globalError}
+              onBack={() => navigate('/dashboard')}
+              onRefresh={async () => {
+                await Promise.all([workshops.loadHistory(), workshops.loadList()])
+              }}
+              onOpenGeneration={async (workshop) => {
+                const raw = workshop.raw as Record<string, unknown>
+                const jobId =
+                  (typeof raw.jobId === 'string' && raw.jobId) ||
+                  (typeof raw.job_id === 'string' && raw.job_id) ||
+                  ''
+                if (!jobId) {
+                  return
+                }
+                await Promise.all([helper.loadJobStatus(jobId), helper.loadQueueStatus()])
+                navigate('/generation')
+              }}
+              onGenerateNewVersion={async () => {
+                const confirmed = window.confirm(
+                  'Generar una nueva version consumirá 1 token adicional. ¿Quieres continuar?',
+                )
+                if (!confirmed) {
+                  return
+                }
+                await helper.startSession()
+                await tokens.refreshBalance()
+                navigate('/helper')
+              }}
+              onSelect={(workshop) => {
+                setSelectedWorkshop(workshop)
+                navigate('/detail')
+              }}
+            />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/detail"
+        element={
+          <ProtectedRoute isAuthenticated={auth.isAuthenticated}>
+            {selectedWorkshop ? (
+              <WorkshopDetailScreen workshop={selectedWorkshop} onBack={() => navigate('/history')} />
+            ) : (
+              <Navigate to="/history" replace />
+            )}
+          </ProtectedRoute>
+        }
+      />
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  )
 }
 
 export default App

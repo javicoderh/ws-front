@@ -1,5 +1,6 @@
 import { Layout, ErrorBanner, InfoCard } from './Layout'
 import type { JobStatus, QueueStatus } from '../types/backend'
+import { explainJobFailure } from '../utils/jobErrors'
 
 type Props = {
   jobId: string | null
@@ -10,6 +11,7 @@ type Props = {
   onRefresh: () => Promise<void>
   onBackDashboard: () => void
   onGoHistory: () => void
+  onResumeFromFailedJob: () => Promise<void>
 }
 
 function renderAhead(label: string, jobs?: { jobId: string; workshopName: string }[]) {
@@ -38,9 +40,12 @@ export function GenerationStatusScreen({
   onRefresh,
   onBackDashboard,
   onGoHistory,
+  onResumeFromFailedJob,
 }: Props) {
   const status = jobStatus?.job.status ?? 'unknown'
+  const failedJobId = jobStatus?.job.jobId ?? jobId
   const finished = status === 'done' || status === 'completed' || status === 'failed' || status === 'cancelled'
+  const failure = explainJobFailure(jobStatus?.job.error)
 
   return (
     <Layout
@@ -96,9 +101,22 @@ export function GenerationStatusScreen({
           <button type="button" onClick={() => void onRefresh()} disabled={loading}>
             {loading ? 'Actualizando...' : 'Refrescar ahora'}
           </button>
+          {status === 'failed' && failedJobId ? (
+            <button type="button" onClick={() => void onResumeFromFailedJob()} disabled={loading}>
+              {loading ? 'Reabriendo...' : 'Reabrir helper desde este intento'}
+            </button>
+          ) : null}
         </div>
 
         {finished ? <p className="pill">Proceso finalizado: {status}</p> : null}
+        {status === 'failed' ? (
+          <article className="card stack">
+            <h3>{failure?.title ?? 'La generación falló'}</h3>
+            <p>{failure?.detail ?? 'Ocurrió un error al crear el workshop.'}</p>
+            <p className="hint">Qué hacer: {failure?.action ?? 'Reintenta nuevamente.'}</p>
+            {jobStatus?.job.error ? <p className="hint">Detalle técnico: {jobStatus.job.error}</p> : null}
+          </article>
+        ) : null}
         <ErrorBanner message={error} />
       </section>
     </Layout>

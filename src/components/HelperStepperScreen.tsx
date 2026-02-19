@@ -23,6 +23,57 @@ type ManualInstrument = {
   essentialContents: string
 }
 
+function parseOptionalList(raw: string): string[] {
+  return raw
+    .split(/[,;\n]/g)
+    .map((x) => x.trim())
+    .filter(Boolean)
+}
+
+function buildInstrumentTemplate(manual: ManualInstrument[], countNumber: number): string {
+  const normalized = manual.slice(0, countNumber)
+  const blocks = normalized.map((item, index) => {
+    const title = `Instrumento ${index + 1}`
+    const description = item.activityDescription.trim() || `Instrumento ${index + 1} del workshop`
+    const imprescindibles = parseOptionalList(item.essentialContents)
+    const imprescindiblesLine =
+      imprescindibles.length > 0
+        ? `preguntas imprescindibles: ${imprescindibles.join(' ; ')}`
+        : ''
+
+    if (item.type === 'actividad_con_rubrica') {
+      return [
+        title,
+        `descripcion: ${description}`,
+        'modalidad: actividad con rubrica',
+        imprescindiblesLine,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    }
+
+    const total = Math.max(1, Number(item.totalQuestions) || 0)
+    const alternatives = Math.max(0, Number(item.multipleChoiceQuestions) || 0)
+    const trueFalse = Math.max(0, Number(item.trueFalseQuestions) || 0)
+    const openQuestions = Math.max(0, total - alternatives - trueFalse)
+
+    return [
+      title,
+      `descripcion: ${description}`,
+      'modalidad: instrumento escrito',
+      `preguntas totales: ${total}`,
+      `preguntas alternativas: ${alternatives}`,
+      `preguntas verdadero y falso: ${trueFalse}`,
+      `preguntas abiertas: ${openQuestions}`,
+      imprescindiblesLine,
+    ]
+      .filter(Boolean)
+      .join('\n')
+  })
+
+  return blocks.join('\n\n')
+}
+
 const KNOWN_STEPS = [
   'workshop_nombre',
   'nivel_workshop',
@@ -142,48 +193,11 @@ function InstrumentWizard({ onSubmit, loading }: { onSubmit: (value: unknown) =>
     event.preventDefault()
 
     if (mode === 'automatico') {
-      await onSubmit({
-        mode,
-        instrumentCount: countNumber,
-      })
+      await onSubmit('delegar automatico\npreferencia: balanceado')
       return
     }
 
-    const instruments = manual.map((item) => {
-      if (item.type === 'actividad_con_rubrica') {
-        return {
-          type: item.type,
-          activityDescription: item.activityDescription,
-          essentialContents: item.essentialContents
-            .split(',')
-            .map((x) => x.trim())
-            .filter(Boolean),
-        }
-      }
-
-      const total = Number(item.totalQuestions) || 0
-      const alternatives = Number(item.multipleChoiceQuestions) || 0
-      const trueFalse = Number(item.trueFalseQuestions) || 0
-      const openQuestions = Math.max(0, total - alternatives - trueFalse)
-
-      return {
-        type: item.type,
-        totalQuestions: total,
-        multipleChoiceQuestions: alternatives,
-        trueFalseQuestions: trueFalse,
-        openQuestions,
-        essentialContents: item.essentialContents
-          .split(',')
-          .map((x) => x.trim())
-          .filter(Boolean),
-      }
-    })
-
-    await onSubmit({
-      mode,
-      instrumentCount: countNumber,
-      instruments,
-    })
+    await onSubmit(buildInstrumentTemplate(manual, countNumber))
   }
 
   return (
@@ -292,7 +306,7 @@ function InstrumentWizard({ onSubmit, loading }: { onSubmit: (value: unknown) =>
               )}
 
               <label>
-                Contenidos imprescindibles (coma separada)
+                Contenidos imprescindibles a evaluar (opcional)
                 <textarea
                   value={instrument.essentialContents}
                   onChange={(e) => {
@@ -303,7 +317,7 @@ function InstrumentWizard({ onSubmit, loading }: { onSubmit: (value: unknown) =>
                       return next
                     })
                   }}
-                  placeholder="opcional en automatico, recomendado en manual"
+                  placeholder="Ejemplo: Aplicar transferencia de fuerza ; Justificar decisiones tecnicas (deja vacio si no hay obligatorios)"
                 />
               </label>
             </article>
@@ -353,9 +367,9 @@ export function HelperStepperScreen({
     setValues(next)
   }, [fields, helperState])
 
-  useEffect(() => {
-    setSelectedSuggestion('')
-  }, [stepId])
+  const selectedSuggestionValue = suggestions.includes(selectedSuggestion)
+    ? selectedSuggestion
+    : ''
 
   const submitGeneric = async (event: FormEvent) => {
     event.preventDefault()
@@ -363,21 +377,21 @@ export function HelperStepperScreen({
       return
     }
     if (hasSuggestionOptions) {
-      if (!selectedSuggestion) {
+      if (!selectedSuggestionValue) {
         return
       }
       const fieldType = fields[0]?.valueType
       const retryAnswer =
         fieldType === 'string_array' || fieldType === 'multi_select'
-          ? [selectedSuggestion]
-          : selectedSuggestion
+          ? [selectedSuggestionValue]
+          : selectedSuggestionValue
       await onAnswer(stepId, retryAnswer)
       return
     }
     await onAnswer(stepId, buildAnswer(fields, values))
   }
 
-  const isReview = stepId === 'review'
+  const canFinalize = helperState?.canFinalize === true
   const isInstrumentStep = stepId === 'instrumentos_de_evaluacion_requeridos'
 
   return (
@@ -398,7 +412,28 @@ export function HelperStepperScreen({
       <section className="section stack">
         <p className="pill">Estado: {helperState?.status ?? 'sin estado'}</p>
         <h2>{stepId || 'Sin step activo'}</h2>
-        <p>{helperState?.prompt ?? 'Sin prompt disponible.'}</p>
+        <p>
+          {isInstrumentStep
+            ? 'Define instrumentos usando el formato guiado. Si dejas contenidos imprescindibles vacio, se asume que no hay contenidos obligatorios especificos.'
+            : helperState?.prompt ?? 'Sin prompt disponible.'}
+        </p>
+
+        {isInstrumentStep ? (
+          <article className="card stack">
+            <h3>Formato recomendado</h3>
+            <pre>{`Instrumento 1
+descripcion: Evaluacion de cierre del modulo
+modalidad: instrumento escrito
+preguntas totales: 10
+preguntas alternativas: 5
+preguntas verdadero y falso: 3
+preguntas abiertas: 2
+preguntas imprescindibles: Aplicar transferencia de fuerza ; Justificar decisiones tecnicas`}</pre>
+            <p className="hint">
+              `preguntas imprescindibles` es opcional. Si no tienes algo que deba evaluarse si o si, dejalo vacio.
+            </p>
+          </article>
+        ) : null}
 
         {helperState?.feedback ? <p className="hint">Feedback: {helperState.feedback}</p> : null}
 
@@ -413,12 +448,12 @@ export function HelperStepperScreen({
 
         {isInstrumentStep ? (
           <InstrumentWizard onSubmit={(value) => onAnswer(stepId, value)} loading={loading} />
-        ) : isReview ? (
+        ) : canFinalize ? (
           <div className="stack">
             <button
               type="button"
               onClick={() => void onFinalize()}
-              disabled={loading || !helperState?.canFinalize}
+              disabled={loading}
             >
               {loading ? 'Generando...' : 'Generar workshop'}
             </button>
@@ -444,7 +479,7 @@ export function HelperStepperScreen({
                 Elige una opcion sugerida
                 <select
                   required
-                  value={selectedSuggestion}
+                  value={selectedSuggestionValue}
                   onChange={(e) => setSelectedSuggestion(e.target.value)}
                 >
                   <option value="">Seleccionar...</option>

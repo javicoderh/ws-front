@@ -88,6 +88,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
   }, [])
 
+  useEffect(() => {
+    const onAuthRefreshed = () => {
+      const stored = localStorage.getItem(TOKEN_STORAGE_KEY)
+      const storedRefresh = localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY)
+      setIdToken(stored && stored.trim() ? stored : null)
+      setRefreshToken(storedRefresh && storedRefresh.trim() ? storedRefresh : null)
+    }
+    window.addEventListener('workshopia:auth-refreshed', onAuthRefreshed as EventListener)
+    return () => {
+      window.removeEventListener('workshopia:auth-refreshed', onAuthRefreshed as EventListener)
+    }
+  }, [])
+
   const persistAuth = useCallback((auth: { idToken: string; refreshToken: string | null; user: AuthUser | null }) => {
     localStorage.setItem(TOKEN_STORAGE_KEY, auth.idToken)
     setIdToken(auth.idToken)

@@ -5,6 +5,8 @@ import { useApiClient } from './ApiClientContext'
 import { useAuth } from './AuthContext'
 import type {
   GenericRecord,
+  UserEscalatedCaseItem,
+  UserHelperSessionItem,
   HelperField,
   HelperMetrics,
   HelperState,
@@ -33,21 +35,72 @@ type HelperContextValue = {
   jobId: string | null
   jobStatus: JobStatus | null
   queueStatus: QueueStatus | null
+  userSessions: UserHelperSessionItem[]
+  myEscalatedCases: UserEscalatedCaseItem[]
   loading: boolean
   error: string | null
   startSession: () => Promise<HelperState>
   loadState: (sessionIdArg?: string) => Promise<HelperState>
   answerStep: (stepId: string, answer: unknown) => Promise<HelperState>
   editStep: (stepId: string) => Promise<HelperState>
+  resumeFailedJob: (jobId: string) => Promise<HelperState>
   finalizeSession: () => Promise<FinalizeResult>
   loadMetrics: (sessionIdArg?: string) => Promise<void>
   loadJobStatus: (jobIdArg?: string) => Promise<void>
   loadQueueStatus: () => Promise<void>
+  loadUserSessions: () => Promise<void>
+  loadMyEscalatedCases: () => Promise<void>
   reset: () => void
   clearError: () => void
 }
 
 const HelperContext = createContext<HelperContextValue | undefined>(undefined)
+const HELPER_SESSION_STORAGE_KEY = 'workshopia.helperSessionId'
+const HELPER_JOB_STORAGE_KEY = 'workshopia.helperJobId'
+
+function readStoredSessionId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const value = window.localStorage.getItem(HELPER_SESSION_STORAGE_KEY)
+  if (!value || !value.trim()) {
+    return null
+  }
+  return value.trim()
+}
+
+function persistSessionId(value: string | null): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  if (!value) {
+    window.localStorage.removeItem(HELPER_SESSION_STORAGE_KEY)
+    return
+  }
+  window.localStorage.setItem(HELPER_SESSION_STORAGE_KEY, value)
+}
+
+function readStoredJobId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const value = window.localStorage.getItem(HELPER_JOB_STORAGE_KEY)
+  if (!value || !value.trim()) {
+    return null
+  }
+  return value.trim()
+}
+
+function persistJobId(value: string | null): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  if (!value) {
+    window.localStorage.removeItem(HELPER_JOB_STORAGE_KEY)
+    return
+  }
+  window.localStorage.setItem(HELPER_JOB_STORAGE_KEY, value)
+}
 
 function record(payload: unknown): GenericRecord {
   return typeof payload === 'object' && payload !== null ? (payload as GenericRecord) : {}
@@ -283,16 +336,70 @@ function parseMetrics(payload: unknown): HelperMetrics {
   }
 }
 
+function parseUserSessions(payload: unknown): UserHelperSessionItem[] {
+  if (!Array.isArray(payload)) return []
+  return payload
+    .map((item) => {
+      const row = record(item)
+      const sessionId = asString(row.sessionId)
+      const status = asString(row.status)
+      const currentStepId = asString(row.currentStepId)
+      const currentStepTitle = asString(row.currentStepTitle)
+      if (!sessionId || !status || !currentStepId || !currentStepTitle) {
+        return null
+      }
+      const parsed: UserHelperSessionItem = {
+        sessionId,
+        status,
+        currentStepId,
+        currentStepTitle,
+      }
+      const mode = asString(row.mode)
+      if (mode) {
+        parsed.mode = mode
+      }
+      return parsed
+    })
+    .filter((row) => row !== null) as UserHelperSessionItem[]
+}
+
+function parseMyEscalatedCases(payload: unknown): UserEscalatedCaseItem[] {
+  if (!Array.isArray(payload)) return []
+  return payload
+    .map((item) => {
+      const row = record(item)
+      const caseId = asString(row.caseId)
+      const sessionId = asString(row.sessionId)
+      const stepId = asString(row.stepId)
+      const reason = asString(row.reason)
+      const attentionStatus = asString(row.attentionStatus)
+      if (!caseId || !sessionId || !stepId || !reason || !attentionStatus) {
+        return null
+      }
+      return {
+        caseId,
+        sessionId,
+        stepId,
+        reason,
+        resolved: asBool(row.resolved),
+        attentionStatus,
+      }
+    })
+    .filter((row): row is UserEscalatedCaseItem => row !== null)
+}
+
 export function HelperProvider({ children }: PropsWithChildren) {
   const { request } = useApiClient()
   const { idToken } = useAuth()
 
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(() => readStoredSessionId())
   const [state, setState] = useState<HelperState | null>(null)
   const [metrics, setMetrics] = useState<HelperMetrics | null>(null)
-  const [jobId, setJobId] = useState<string | null>(null)
+  const [jobId, setJobId] = useState<string | null>(() => readStoredJobId())
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null)
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
+  const [userSessions, setUserSessions] = useState<UserHelperSessionItem[]>([])
+  const [myEscalatedCases, setMyEscalatedCases] = useState<UserEscalatedCaseItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -319,8 +426,10 @@ export function HelperProvider({ children }: PropsWithChildren) {
         throw new Error('No se recibio sessionId al iniciar helper')
       }
       setSessionId(parsed.sessionId)
+      persistSessionId(parsed.sessionId)
       setState(parsed)
       setJobId(null)
+      persistJobId(null)
       setJobStatus(null)
       setQueueStatus(null)
       setMetrics(null)
@@ -337,7 +446,7 @@ export function HelperProvider({ children }: PropsWithChildren) {
   const loadState = useCallback(
     async (sessionIdArg?: string) => {
       const token = withToken()
-      const target = sessionIdArg ?? sessionId
+      const target = sessionIdArg ?? sessionId ?? readStoredSessionId()
       if (!target) {
         throw new Error('No existe sessionId activa')
       }
@@ -351,6 +460,7 @@ export function HelperProvider({ children }: PropsWithChildren) {
         const parsed = parseHelperState(payload)
         setState(parsed)
         setSessionId(parsed.sessionId)
+        persistSessionId(parsed.sessionId)
         return parsed
       } catch (err) {
         const message = formatBackendError(err, 'No se pudo cargar estado del helper')
@@ -366,19 +476,22 @@ export function HelperProvider({ children }: PropsWithChildren) {
   const answerStep = useCallback(
     async (stepId: string, answer: unknown) => {
       const token = withToken()
-      if (!sessionId) {
+      const target = sessionId ?? readStoredSessionId()
+      if (!target) {
         throw new Error('No existe sessionId activa')
       }
 
       setLoading(true)
       setError(null)
       try {
-        const payload = await request<unknown>(`/workshop-helper/session/${sessionId}/answer`, {
+        const payload = await request<unknown>(`/workshop-helper/session/${target}/answer`, {
           method: 'POST',
           body: { idToken: token, stepId, answer },
         })
         const parsed = parseHelperState(payload)
         setState(parsed)
+        setSessionId(parsed.sessionId)
+        persistSessionId(parsed.sessionId)
         return parsed
       } catch (err) {
         const message = formatBackendError(err, 'No se pudo responder el step')
@@ -394,19 +507,22 @@ export function HelperProvider({ children }: PropsWithChildren) {
   const editStep = useCallback(
     async (stepId: string) => {
       const token = withToken()
-      if (!sessionId) {
+      const target = sessionId ?? readStoredSessionId()
+      if (!target) {
         throw new Error('No existe sessionId activa')
       }
 
       setLoading(true)
       setError(null)
       try {
-        const payload = await request<unknown>(`/workshop-helper/session/${sessionId}/edit-step`, {
+        const payload = await request<unknown>(`/workshop-helper/session/${target}/edit-step`, {
           method: 'POST',
           body: { idToken: token, stepId },
         })
         const parsed = parseHelperState(payload)
         setState(parsed)
+        setSessionId(parsed.sessionId)
+        persistSessionId(parsed.sessionId)
         return parsed
       } catch (err) {
         const message = formatBackendError(err, 'No se pudo editar el step')
@@ -421,20 +537,22 @@ export function HelperProvider({ children }: PropsWithChildren) {
 
   const finalizeSession = useCallback(async (): Promise<FinalizeResult> => {
     const token = withToken()
-    if (!sessionId) {
+    const target = sessionId ?? readStoredSessionId()
+    if (!target) {
       throw new Error('No existe sessionId activa')
     }
 
     setLoading(true)
     setError(null)
     try {
-      const payload = await request<unknown>(`/workshop-helper/session/${sessionId}/finalize`, {
+      const payload = await request<unknown>(`/workshop-helper/session/${target}/finalize`, {
         method: 'POST',
         body: { idToken: token },
       })
       const result = parseFinalizeResult(payload)
       if (result.jobId) {
         setJobId(result.jobId)
+        persistJobId(result.jobId)
       }
       return result
     } catch (err) {
@@ -446,10 +564,42 @@ export function HelperProvider({ children }: PropsWithChildren) {
     }
   }, [request, sessionId, withToken])
 
+  const resumeFailedJob = useCallback(
+    async (failedJobId: string): Promise<HelperState> => {
+      const token = withToken()
+      if (!failedJobId.trim()) {
+        throw new Error('jobId fallido es requerido')
+      }
+
+      setLoading(true)
+      setError(null)
+      try {
+        const payload = await request<unknown>('/workshop-helper/session/resume-failed-job', {
+          method: 'POST',
+          body: { idToken: token, jobId: failedJobId.trim() },
+        })
+        const parsed = parseHelperState(payload)
+        setState(parsed)
+        setSessionId(parsed.sessionId)
+        persistSessionId(parsed.sessionId)
+        setJobId(failedJobId.trim())
+        persistJobId(failedJobId.trim())
+        return parsed
+      } catch (err) {
+        const message = formatBackendError(err, 'No se pudo reabrir la sesion desde el job fallido')
+        setError(message)
+        throw err
+      } finally {
+        setLoading(false)
+      }
+    },
+    [request, withToken],
+  )
+
   const loadMetrics = useCallback(
     async (sessionIdArg?: string) => {
       const token = withToken()
-      const target = sessionIdArg ?? sessionId
+      const target = sessionIdArg ?? sessionId ?? readStoredSessionId()
       if (!target) {
         throw new Error('No existe sessionId activa')
       }
@@ -471,7 +621,7 @@ export function HelperProvider({ children }: PropsWithChildren) {
 
   const loadJobStatus = useCallback(
     async (jobIdArg?: string) => {
-      const target = jobIdArg ?? jobId
+      const target = jobIdArg ?? jobId ?? readStoredJobId()
       if (!target) {
         throw new Error('No existe jobId activo')
       }
@@ -482,6 +632,7 @@ export function HelperProvider({ children }: PropsWithChildren) {
         const parsed = parseJobStatus(payload)
         setJobStatus(parsed)
         setJobId(target)
+        persistJobId(target)
       } catch (err) {
         const message = formatBackendError(err, 'No se pudo cargar estado del job')
         setError(message)
@@ -503,13 +654,49 @@ export function HelperProvider({ children }: PropsWithChildren) {
     }
   }, [request])
 
+  const loadUserSessions = useCallback(async () => {
+    const token = withToken()
+    setError(null)
+    try {
+      const payload = await request<unknown>('/workshop-helper/sessions/list', {
+        method: 'POST',
+        body: { idToken: token },
+      })
+      setUserSessions(parseUserSessions(payload))
+    } catch (err) {
+      const message = formatBackendError(err, 'No se pudieron cargar tus sesiones helper')
+      setError(message)
+      throw err
+    }
+  }, [request, withToken])
+
+  const loadMyEscalatedCases = useCallback(async () => {
+    const token = withToken()
+    setError(null)
+    try {
+      const payload = await request<unknown>('/workshop-helper/escalated/my', {
+        method: 'POST',
+        body: { idToken: token },
+      })
+      setMyEscalatedCases(parseMyEscalatedCases(payload))
+    } catch (err) {
+      const message = formatBackendError(err, 'No se pudieron cargar tus casos escalados')
+      setError(message)
+      throw err
+    }
+  }, [request, withToken])
+
   const reset = useCallback(() => {
     setSessionId(null)
+    persistSessionId(null)
     setState(null)
     setMetrics(null)
     setJobId(null)
+    persistJobId(null)
     setJobStatus(null)
     setQueueStatus(null)
+    setUserSessions([])
+    setMyEscalatedCases([])
     setError(null)
   }, [])
 
@@ -521,16 +708,21 @@ export function HelperProvider({ children }: PropsWithChildren) {
       jobId,
       jobStatus,
       queueStatus,
+      userSessions,
+      myEscalatedCases,
       loading,
       error,
       startSession,
       loadState,
       answerStep,
       editStep,
+      resumeFailedJob,
       finalizeSession,
       loadMetrics,
       loadJobStatus,
       loadQueueStatus,
+      loadUserSessions,
+      loadMyEscalatedCases,
       reset,
       clearError,
     }),
@@ -538,21 +730,26 @@ export function HelperProvider({ children }: PropsWithChildren) {
       answerStep,
       clearError,
       editStep,
+      resumeFailedJob,
       error,
       finalizeSession,
       jobId,
       jobStatus,
+      loadMyEscalatedCases,
       loadJobStatus,
       loadMetrics,
       loadQueueStatus,
+      loadUserSessions,
       loadState,
       loading,
+      myEscalatedCases,
       metrics,
       queueStatus,
       reset,
       sessionId,
       startSession,
       state,
+      userSessions,
     ],
   )
 

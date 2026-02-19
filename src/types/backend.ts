@@ -249,3 +249,20 @@ export type HelperMetrics = {
   openaiTotalTokens: number
   openaiCostUsd: number
 }
+
+export type UserHelperSessionItem = {
+  sessionId: string
+  mode?: string
+  status: string
+  currentStepId: string
+  currentStepTitle: string
+}
+
+export type UserEscalatedCaseItem = {
+  caseId: string
+  sessionId: string
+  stepId: string
+  reason: string
+  resolved: boolean
+  attentionStatus: 'waiting_admin' | 'in_review' | 'resolved' | string
+}
