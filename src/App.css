@@ -494,3 +494,17 @@ pre {
   background: linear-gradient(135deg, #f28a4b, #db6a3f);
   box-shadow: 0 8px 18px rgba(195, 86, 38, 0.3);
 }
+
+.warning-modal {
+  border-color: rgba(255, 168, 120, 0.55);
+  background: linear-gradient(145deg, rgba(66, 42, 30, 0.95), rgba(33, 22, 18, 0.97));
+  box-shadow: 0 24px 42px rgba(0, 0, 0, 0.46);
+}
+
+.warning-modal-highlight {
+  border: 1px solid rgba(255, 175, 130, 0.5);
+  background: rgba(255, 132, 57, 0.16);
+  border-radius: 12px;
+  padding: 0.55rem 0.65rem;
+  color: #ffd9c4;
+}

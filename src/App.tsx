@@ -572,14 +572,16 @@ function App() {
                 await Promise.all([helper.loadJobStatus(jobId), helper.loadQueueStatus()])
                 navigate('/generation')
               }}
-              onGenerateNewVersion={async () => {
-                const confirmed = window.confirm(
-                  'Generar una nueva version consumirá 1 token adicional. ¿Quieres continuar?',
-                )
-                if (!confirmed) {
-                  return
+              onGenerateNewVersion={async (workshop) => {
+                const raw = workshop.raw as Record<string, unknown>
+                const jobId =
+                  (typeof raw.jobId === 'string' && raw.jobId) ||
+                  (typeof raw.job_id === 'string' && raw.job_id) ||
+                  ''
+                if (!jobId) {
+                  throw new Error('No se encontró jobId para iniciar nueva versión')
                 }
-                await helper.startSession()
+                await helper.startNewVersionFromJob(jobId)
                 await tokens.refreshBalance()
                 navigate('/helper')
               }}

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Layout, ErrorBanner } from './Layout'
 import type { WorkshopRecord } from '../types/backend'
 import { buildWorkshopSummary, formatEpoch } from '../utils/workshopSummary'
@@ -24,6 +24,9 @@ export function WorkshopHistoryScreen({
   onOpenGeneration,
   onGenerateNewVersion,
 }: Props) {
+  const [pendingVersionWorkshop, setPendingVersionWorkshop] = useState<WorkshopRecord | null>(null)
+  const [confirmingVersion, setConfirmingVersion] = useState(false)
+
   const items = useMemo(() => {
     const byKey = new Map<string, WorkshopRecord>()
 
@@ -135,7 +138,7 @@ export function WorkshopHistoryScreen({
                     <button
                       type="button"
                       className="danger-soft-button"
-                      onClick={() => void onGenerateNewVersion(item)}
+                      onClick={() => setPendingVersionWorkshop(item)}
                       disabled={loading}
                     >
                       Generar nueva versión (1 token)
@@ -150,6 +153,70 @@ export function WorkshopHistoryScreen({
 
         <ErrorBanner message={error} />
       </section>
+
+      {pendingVersionWorkshop ? (
+        <div
+          className="landing-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirmar nueva version"
+          onClick={() => {
+            if (!confirmingVersion) {
+              setPendingVersionWorkshop(null)
+            }
+          }}
+        >
+          <article className="landing-modal warning-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="landing-modal-header">
+              <h3>Confirmar nueva versión</h3>
+              <button
+                type="button"
+                className="landing-ghost-button"
+                onClick={() => setPendingVersionWorkshop(null)}
+                disabled={confirmingVersion}
+              >
+                Cerrar
+              </button>
+            </header>
+            <div className="landing-modal-body">
+              <p className="warning-modal-highlight">
+                Esta acción consumirá <strong>1 token adicional</strong>.
+              </p>
+              <p>
+                Se iniciará un nuevo flujo de helper para generar otra versión del workshop:
+                <strong> {buildWorkshopSummary(pendingVersionWorkshop).title}</strong>.
+              </p>
+              <div className="row">
+                <button
+                  type="button"
+                  className="danger-soft-button"
+                  disabled={confirmingVersion}
+                  onClick={() => {
+                    setConfirmingVersion(true)
+                    void onGenerateNewVersion(pendingVersionWorkshop)
+                      .then(() => {
+                        setPendingVersionWorkshop(null)
+                      })
+                      .finally(() => {
+                        setConfirmingVersion(false)
+                      })
+                  }}
+                >
+                  {confirmingVersion ? 'Iniciando...' : 'Sí, generar nueva versión (1 token)'}
+                </button>
+                <button
+                  type="button"
+                  className="landing-ghost-button"
+                  onClick={() => setPendingVersionWorkshop(null)}
+                  disabled={confirmingVersion}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </article>
+        </div>
+      ) : null}
     </Layout>
   )
 }

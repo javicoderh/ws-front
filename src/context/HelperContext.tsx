@@ -44,6 +44,7 @@ type HelperContextValue = {
   answerStep: (stepId: string, answer: unknown) => Promise<HelperState>
   editStep: (stepId: string) => Promise<HelperState>
   resumeFailedJob: (jobId: string) => Promise<HelperState>
+  startNewVersionFromJob: (jobId: string) => Promise<HelperState>
   finalizeSession: () => Promise<FinalizeResult>
   loadMetrics: (sessionIdArg?: string) => Promise<void>
   loadJobStatus: (jobIdArg?: string) => Promise<void>
@@ -596,6 +597,38 @@ export function HelperProvider({ children }: PropsWithChildren) {
     [request, withToken],
   )
 
+  const startNewVersionFromJob = useCallback(
+    async (jobIdSource: string): Promise<HelperState> => {
+      const token = withToken()
+      if (!jobIdSource.trim()) {
+        throw new Error('jobId es requerido para nueva versión')
+      }
+
+      setLoading(true)
+      setError(null)
+      try {
+        const payload = await request<unknown>('/workshop-helper/session/new-version-from-job', {
+          method: 'POST',
+          body: { idToken: token, jobId: jobIdSource.trim() },
+        })
+        const parsed = parseHelperState(payload)
+        setState(parsed)
+        setSessionId(parsed.sessionId)
+        persistSessionId(parsed.sessionId)
+        setJobId(null)
+        persistJobId(null)
+        return parsed
+      } catch (err) {
+        const message = formatBackendError(err, 'No se pudo iniciar nueva versión desde el historial')
+        setError(message)
+        throw err
+      } finally {
+        setLoading(false)
+      }
+    },
+    [request, withToken],
+  )
+
   const loadMetrics = useCallback(
     async (sessionIdArg?: string) => {
       const token = withToken()
@@ -717,6 +750,7 @@ export function HelperProvider({ children }: PropsWithChildren) {
       answerStep,
       editStep,
       resumeFailedJob,
+      startNewVersionFromJob,
       finalizeSession,
       loadMetrics,
       loadJobStatus,
@@ -731,6 +765,7 @@ export function HelperProvider({ children }: PropsWithChildren) {
       clearError,
       editStep,
       resumeFailedJob,
+      startNewVersionFromJob,
       error,
       finalizeSession,
       jobId,
