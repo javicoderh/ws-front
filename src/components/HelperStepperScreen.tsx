@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Layout, ErrorBanner } from './Layout'
 import type { HelperField, HelperState } from '../types/backend'
@@ -23,9 +23,23 @@ type ManualInstrument = {
   essentialContents: string
 }
 
+const SESSION_COUNT_STORAGE_PREFIX = 'workshopia.helper.sessionCount.'
+const MAX_SESSIONS_SUPPORTED = 8
+const FALLBACK_MAX_ITEMS = MAX_SESSIONS_SUPPORTED * 2
+
+type StringArrayUiConfig = {
+  placeholder: string
+  addButtonLabel: string
+  itemsLabel: string
+  maxWordsPerItem?: number
+  maxItems?: number
+  rulesHint?: string
+  exampleHint?: string
+}
+
 function parseOptionalList(raw: string): string[] {
   return raw
-    .split(/[,;\n]/g)
+    .split(/[;\n]/g)
     .map((x) => x.trim())
     .filter(Boolean)
 }
@@ -74,42 +88,20 @@ function buildInstrumentTemplate(manual: ManualInstrument[], countNumber: number
   return blocks.join('\n\n')
 }
 
-const KNOWN_STEPS = [
-  'workshop_nombre',
-  'nivel_workshop',
-  'workshop_descripcion',
-  'objetivo_principal',
-  'objetivos_secundarios',
-  'numero_de_sesiones',
-  'duracion_sesion_minutos',
-  'descripcion_publico_objetivo',
-  'prerequisitos',
-  'oat_alignment.required',
-  'oat_alignment.levels',
-  'consideraciones_dua.required',
-  'consideraciones_dua',
-  'mandatory_activities',
-  'numero_de_evaluaciones_requeridas',
-  'instrumentos_de_evaluacion_requeridos',
-  'delivery_modes',
-  'brochure_brief.one_liner',
-  'brochure_brief.value_proposition',
-  'brochure_brief.format',
-  'brochure_brief.learning_outcomes_client',
-  'brochure_brief.cta.label',
-  'brochure_brief.cta.action',
-  'brochure_brief.cta.action_email_confirmed',
-  'brochure_brief.provider.name',
-  'brochure_brief.provider.contact.email',
-  'brochure_brief.provider.contact.email_confirmed',
-  'brochure_brief.provider.contact.phone',
-  'brochure_brief.provider.contact.instagram',
-  'brochure_brief.provider.contact.website',
-  'email_delivery.recipient_email',
-  'email_delivery.recipient_email_confirmed',
-  'email_delivery.subject',
-  'email_delivery.body',
-]
+function ensureManualCount(prev: ManualInstrument[], count: number): ManualInstrument[] {
+  const next = [...prev]
+  while (next.length < count) {
+    next.push({
+      type: 'actividad_con_rubrica',
+      activityDescription: '',
+      totalQuestions: '0',
+      multipleChoiceQuestions: '0',
+      trueFalseQuestions: '0',
+      essentialContents: '',
+    })
+  }
+  return next.slice(0, count)
+}
 
 function fieldKey(field: HelperField, index: number): string {
   return field.id || `field_${index}`
@@ -137,7 +129,7 @@ function coerceByType(field: HelperField, value: string): unknown {
   }
   if (type === 'string_array') {
     return value
-      .split(/\\n|,/g)
+      .split(/\n|,/g)
       .map((item) => item.trim())
       .filter(Boolean)
   }
@@ -161,33 +153,103 @@ function buildAnswer(fields: HelperField[], values: Record<string, string>): unk
   }, {})
 }
 
+function initialValuesForFields(fields: HelperField[]): Record<string, string> {
+  if (fields.length === 0) {
+    return { __single: '' }
+  }
+  return fields.reduce<Record<string, string>>((acc, field, index) => {
+    acc[fieldKey(field, index)] = ''
+    return acc
+  }, {})
+}
+
+function parseStringArrayValues(raw: string): string[] {
+  return raw
+    .split(/\n|,/g)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function countWords(text: string): number {
+  return text
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length
+}
+
+function sessionCountStorageKey(sessionId: string): string {
+  return `${SESSION_COUNT_STORAGE_PREFIX}${sessionId}`
+}
+
+function readStoredSessionCount(sessionId: string): number | null {
+  if (typeof window === 'undefined' || !sessionId.trim()) {
+    return null
+  }
+  const raw = window.localStorage.getItem(sessionCountStorageKey(sessionId))
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function persistSessionCount(sessionId: string, count: number): void {
+  if (typeof window === 'undefined' || !sessionId.trim() || !Number.isFinite(count) || count <= 0) {
+    return
+  }
+  window.localStorage.setItem(sessionCountStorageKey(sessionId), String(Math.trunc(count)))
+}
+
+function stringArrayUiCopy(stepId: string, fieldId: string, sessionCount: number | null): StringArrayUiConfig {
+  const maxItems = Math.max(1, (sessionCount ?? (FALLBACK_MAX_ITEMS / 2)) * 2)
+
+  if (stepId === 'mandatory_activities' || fieldId === 'mandatory_activities') {
+    return {
+      placeholder: 'Agregar actividad obligatoria...',
+      addButtonLabel: '+ Agregar actividad obligatoria',
+      itemsLabel: 'Actividades obligatorias',
+      maxWordsPerItem: 100,
+      maxItems,
+      rulesHint: 'Máximo 2 actividades obligatorias por sesión. Máximo 100 palabras por actividad.',
+    }
+  }
+
+  if (stepId === 'consideraciones_dua' || fieldId === 'consideraciones_dua') {
+    return {
+      placeholder: 'Agregar consideración DUA...',
+      addButtonLabel: '+ Agregar consideración DUA',
+      itemsLabel: 'Consideraciones DUA',
+      maxWordsPerItem: 50,
+      maxItems,
+      rulesHint: 'Máximo 2 consideraciones DUA por sesión. Máximo 50 palabras por consideración.',
+    }
+  }
+
+  if (
+    stepId === 'brochure_brief.learning_outcomes_client' ||
+    fieldId === 'brochure_brief.learning_outcomes_client'
+  ) {
+    return {
+      placeholder: 'Agregar resultado esperado...',
+      addButtonLabel: '+ Agregar resultado esperado',
+      itemsLabel: 'Resultados esperados',
+      exampleHint:
+        'Ejemplo: Aplicar una pauta DUA para planificar una clase inclusiva.',
+    }
+  }
+
+  return {
+    placeholder: 'Agregar elemento...',
+    addButtonLabel: '+ Agregar consideración',
+    itemsLabel: 'Items',
+  }
+}
+
 function InstrumentWizard({ onSubmit, loading }: { onSubmit: (value: unknown) => Promise<void>; loading: boolean }) {
   const [mode, setMode] = useState<'automatico' | 'manual'>('automatico')
   const [count, setCount] = useState('1')
   const [manual, setManual] = useState<ManualInstrument[]>([])
+  const [essentialDrafts, setEssentialDrafts] = useState<Record<number, string>>({})
+  const [essentialErrors, setEssentialErrors] = useState<Record<number, string>>({})
 
   const countNumber = useMemo(() => Math.max(1, Number(count) || 1), [count])
-
-  useEffect(() => {
-    if (mode !== 'manual') {
-      return
-    }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setManual((prev) => {
-      const next = [...prev]
-      while (next.length < countNumber) {
-        next.push({
-          type: 'actividad_con_rubrica',
-          activityDescription: '',
-          totalQuestions: '0',
-          multipleChoiceQuestions: '0',
-          trueFalseQuestions: '0',
-          essentialContents: '',
-        })
-      }
-      return next.slice(0, countNumber)
-    })
-  }, [countNumber, mode])
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -204,7 +266,16 @@ function InstrumentWizard({ onSubmit, loading }: { onSubmit: (value: unknown) =>
     <form className="stack" onSubmit={submit}>
       <label>
         Modo de definicion
-        <select value={mode} onChange={(e) => setMode(e.target.value as 'automatico' | 'manual')}>
+        <select
+          value={mode}
+          onChange={(e) => {
+            const nextMode = e.target.value as 'automatico' | 'manual'
+            setMode(nextMode)
+            if (nextMode === 'manual') {
+              setManual((prev) => ensureManualCount(prev, countNumber))
+            }
+          }}
+        >
           <option value="automatico">automatico</option>
           <option value="manual">manual</option>
         </select>
@@ -212,7 +283,19 @@ function InstrumentWizard({ onSubmit, loading }: { onSubmit: (value: unknown) =>
 
       <label>
         Cantidad de instrumentos
-        <input type="number" min={1} value={count} onChange={(e) => setCount(e.target.value)} />
+        <input
+          type="number"
+          min={1}
+          value={count}
+          onChange={(e) => {
+            const nextRaw = e.target.value
+            setCount(nextRaw)
+            if (mode === 'manual') {
+              const nextCount = Math.max(1, Number(nextRaw) || 1)
+              setManual((prev) => ensureManualCount(prev, nextCount))
+            }
+          }}
+        />
       </label>
 
       {mode === 'manual'
@@ -307,18 +390,109 @@ function InstrumentWizard({ onSubmit, loading }: { onSubmit: (value: unknown) =>
 
               <label>
                 Contenidos imprescindibles a evaluar (opcional)
-                <textarea
-                  value={instrument.essentialContents}
-                  onChange={(e) => {
-                    const value = e.target.value
-                    setManual((prev) => {
-                      const next = [...prev]
-                      next[index] = { ...next[index], essentialContents: value }
-                      return next
-                    })
-                  }}
-                  placeholder="Ejemplo: Aplicar transferencia de fuerza ; Justificar decisiones tecnicas (deja vacio si no hay obligatorios)"
-                />
+                <div className="string-array-builder">
+                  <div className="row">
+                    <input
+                      type="text"
+                      value={essentialDrafts[index] ?? ''}
+                      placeholder="Agregar contenido imprescindible..."
+                      onChange={(e) => {
+                        const value = e.target.value
+                        setEssentialDrafts((prev) => ({ ...prev, [index]: value }))
+                        if (essentialErrors[index]) {
+                          setEssentialErrors((prev) => ({ ...prev, [index]: '' }))
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') {
+                          return
+                        }
+                        e.preventDefault()
+                        const draft = (essentialDrafts[index] ?? '').trim()
+                        if (!draft) {
+                          return
+                        }
+                        const words = countWords(draft)
+                        if (words > 30) {
+                          setEssentialErrors((prev) => ({
+                            ...prev,
+                            [index]: `Cada contenido imprescindible admite máximo 30 palabras (actual: ${words}).`,
+                          }))
+                          return
+                        }
+                        const currentItems = parseOptionalList(instrument.essentialContents)
+                        const nextItems = [...currentItems, draft]
+                        setManual((prev) => {
+                          const next = [...prev]
+                          next[index] = { ...next[index], essentialContents: nextItems.join('\n') }
+                          return next
+                        })
+                        setEssentialDrafts((prev) => ({ ...prev, [index]: '' }))
+                        setEssentialErrors((prev) => ({ ...prev, [index]: '' }))
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const draft = (essentialDrafts[index] ?? '').trim()
+                        if (!draft) {
+                          return
+                        }
+                        const words = countWords(draft)
+                        if (words > 30) {
+                          setEssentialErrors((prev) => ({
+                            ...prev,
+                            [index]: `Cada contenido imprescindible admite máximo 30 palabras (actual: ${words}).`,
+                          }))
+                          return
+                        }
+                        const currentItems = parseOptionalList(instrument.essentialContents)
+                        const nextItems = [...currentItems, draft]
+                        setManual((prev) => {
+                          const next = [...prev]
+                          next[index] = { ...next[index], essentialContents: nextItems.join('\n') }
+                          return next
+                        })
+                        setEssentialDrafts((prev) => ({ ...prev, [index]: '' }))
+                        setEssentialErrors((prev) => ({ ...prev, [index]: '' }))
+                      }}
+                    >
+                      + Agregar contenido imprescindible
+                    </button>
+                  </div>
+                  <p className="hint">
+                    Máximo 30 palabras por contenido imprescindible.
+                  </p>
+                  <ErrorBanner message={essentialErrors[index] ?? null} />
+                  {parseOptionalList(instrument.essentialContents).length > 0 ? (
+                    <div className="string-array-items">
+                      {parseOptionalList(instrument.essentialContents).map((item, itemIndex) => (
+                        <div className="string-array-item" key={`inst-${index}-essential-${itemIndex.toString()}`}>
+                          <span>{item}</span>
+                          <button
+                            type="button"
+                            className="landing-ghost-button"
+                            onClick={() => {
+                              const currentItems = parseOptionalList(instrument.essentialContents)
+                              const nextItems = currentItems.filter((_, idx) => idx !== itemIndex)
+                              setManual((prev) => {
+                                const next = [...prev]
+                                next[index] = {
+                                  ...next[index],
+                                  essentialContents: nextItems.join('\n'),
+                                }
+                                return next
+                              })
+                              setEssentialErrors((prev) => ({ ...prev, [index]: '' }))
+                            }}
+                          >
+                            Quitar
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               </label>
             </article>
           ))
@@ -343,29 +517,54 @@ export function HelperStepperScreen({
 }: Props) {
   const stepId = helperState?.currentStepId ?? ''
   const fields = useMemo(() => helperState?.fields ?? [], [helperState])
+  const editableSteps = useMemo(() => {
+    const steps = helperState?.steps ?? []
+    const unique = new Set<string>()
+    for (const step of steps) {
+      if (step.stepId.trim()) {
+        unique.add(step.stepId)
+      }
+    }
+    return Array.from(unique)
+  }, [helperState])
   const suggestions = helperState?.suggestions ?? []
   const hasSuggestionOptions = suggestions.length > 0 && fields.length <= 1
-  const [values, setValues] = useState<Record<string, string>>({ __single: '' })
-  const [stepToEdit, setStepToEdit] = useState('workshop_nombre')
+  const fieldStateKey = useMemo(
+    () => `${stepId}::${fields.map((field, index) => fieldKey(field, index)).join('|')}`,
+    [fields, stepId],
+  )
+  const [valueState, setValueState] = useState<{
+    key: string
+    values: Record<string, string>
+  }>({
+    key: '',
+    values: { __single: '' },
+  })
+  const formValues =
+    valueState.key === fieldStateKey ? valueState.values : initialValuesForFields(fields)
+  const [stepToEdit, setStepToEdit] = useState('')
   const [selectedSuggestion, setSelectedSuggestion] = useState('')
-
-  useEffect(() => {
-    if (!helperState) {
-      return
-    }
-
-    if (fields.length === 0) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setValues({ __single: '' })
-      return
-    }
-
-    const next = fields.reduce<Record<string, string>>((acc, field, index) => {
-      acc[fieldKey(field, index)] = ''
-      return acc
-    }, {})
-    setValues(next)
-  }, [fields, helperState])
+  const [stringArrayDrafts, setStringArrayDrafts] = useState<Record<string, string>>({})
+  const [stringArrayErrors, setStringArrayErrors] = useState<Record<string, string>>({})
+  const [optionalFieldChoices, setOptionalFieldChoices] = useState<Record<string, 'yes' | 'no'>>({})
+  const selectedEditableStep =
+    stepToEdit && editableSteps.includes(stepToEdit) ? stepToEdit : (editableSteps[0] ?? '')
+  const sessionId = helperState?.sessionId ?? ''
+  const sessionCount = useMemo(() => readStoredSessionCount(sessionId), [sessionId])
+  const setFormValues = (
+    updater:
+      | Record<string, string>
+      | ((prev: Record<string, string>) => Record<string, string>),
+  ) => {
+    setValueState((prev) => {
+      const base = prev.key === fieldStateKey ? prev.values : initialValuesForFields(fields)
+      const nextValues = typeof updater === 'function' ? updater(base) : updater
+      return {
+        key: fieldStateKey,
+        values: nextValues,
+      }
+    })
+  }
 
   const selectedSuggestionValue = suggestions.includes(selectedSuggestion)
     ? selectedSuggestion
@@ -388,7 +587,14 @@ export function HelperStepperScreen({
       await onAnswer(stepId, retryAnswer)
       return
     }
-    await onAnswer(stepId, buildAnswer(fields, values))
+    const answer = buildAnswer(fields, formValues)
+    if (stepId === 'numero_de_sesiones') {
+      const parsed = typeof answer === 'number' ? answer : Number(answer)
+      if (Number.isFinite(parsed) && parsed >= 1) {
+        persistSessionCount(sessionId, parsed)
+      }
+    }
+    await onAnswer(stepId, answer)
   }
 
   const canFinalize = helperState?.canFinalize === true
@@ -460,15 +666,19 @@ preguntas imprescindibles: Aplicar transferencia de fuerza ; Justificar decision
 
             <label>
               Volver a editar step
-              <select value={stepToEdit} onChange={(e) => setStepToEdit(e.target.value)}>
-                {KNOWN_STEPS.map((step) => (
+              <select value={selectedEditableStep} onChange={(e) => setStepToEdit(e.target.value)}>
+                {editableSteps.map((step) => (
                   <option key={step} value={step}>
                     {step}
                   </option>
                 ))}
               </select>
             </label>
-            <button type="button" onClick={() => void onEditStep(stepToEdit)} disabled={loading}>
+            <button
+              type="button"
+              onClick={() => void onEditStep(selectedEditableStep)}
+              disabled={loading || !selectedEditableStep}
+            >
               Editar step seleccionado
             </button>
           </div>
@@ -494,8 +704,8 @@ preguntas imprescindibles: Aplicar transferencia de fuerza ; Justificar decision
               <label>
                 Respuesta
                 <textarea
-                  value={values.__single ?? ''}
-                  onChange={(e) => setValues({ __single: e.target.value })}
+                  value={formValues.__single ?? ''}
+                  onChange={(e) => setFormValues({ __single: e.target.value })}
                   required
                 />
               </label>
@@ -505,6 +715,12 @@ preguntas imprescindibles: Aplicar transferencia de fuerza ; Justificar decision
                 const type = field.valueType
                 const label = field.label
                 const options = Array.isArray(field.options) ? field.options.map(toOption) : []
+                const isInstagramOptionalField =
+                  stepId === 'brochure_brief.provider.contact.instagram' &&
+                  field.id === 'brochure_brief.provider.contact.instagram'
+                const isWebsiteOptionalField =
+                  stepId === 'brochure_brief.provider.contact.website' &&
+                  field.id === 'brochure_brief.provider.contact.website'
 
                 if (type === 'select' && options.length > 0) {
                   return (
@@ -512,9 +728,9 @@ preguntas imprescindibles: Aplicar transferencia de fuerza ; Justificar decision
                       {label}
                       <select
                         required={field.required}
-                        value={values[key] ?? ''}
+                        value={formValues[key] ?? ''}
                         onChange={(e) =>
-                          setValues((prev) => ({
+                          setFormValues((prev) => ({
                             ...prev,
                             [key]: e.target.value,
                           }))
@@ -532,73 +748,287 @@ preguntas imprescindibles: Aplicar transferencia de fuerza ; Justificar decision
                 }
 
                 if (type === 'multi_select' && options.length > 0) {
-                  const selected = (values[key] ?? '')
+                  const selected = (formValues[key] ?? '')
                     .split(',')
                     .map((item) => item.trim())
                     .filter(Boolean)
+                  const selectedSet = new Set(selected)
                   return (
                     <label key={key}>
                       {label}
-                      <select
-                        multiple
-                        required={field.required}
-                        value={selected}
-                        onChange={(e) => {
-                          const next = Array.from(e.currentTarget.selectedOptions).map(
-                            (option) => option.value,
+                      <p className="hint">Seleccionados: {selected.length}</p>
+                      <div className="multi-select-options" role="group" aria-label={label}>
+                        {options.map((option) => {
+                          const checked = selectedSet.has(option.value)
+                          return (
+                            <label key={`${key}-${option.value}`} className="multi-select-option">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  const next = checked
+                                    ? selected.filter((value) => value !== option.value)
+                                    : [...selected, option.value]
+                                  setFormValues((prev) => ({
+                                    ...prev,
+                                    [key]: next.join(','),
+                                  }))
+                                }}
+                              />
+                              <span>{option.label}</span>
+                            </label>
                           )
-                          setValues((prev) => ({
-                            ...prev,
-                            [key]: next.join(','),
-                          }))
-                        }}
-                      >
-                        {options.map((option) => (
-                          <option key={`${key}-${option.value}`} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
+                        })}
+                      </div>
+                      <div className="row">
+                        <button
+                          type="button"
+                          className="landing-ghost-button"
+                          disabled={selected.length === 0}
+                          onClick={() =>
+                            setFormValues((prev) => ({
+                              ...prev,
+                              [key]: '',
+                            }))
+                          }
+                        >
+                          Limpiar selección
+                        </button>
+                      </div>
                     </label>
                   )
                 }
 
                 if (type === 'boolean') {
+                  const selectedValue = formValues[key] ?? ''
                   return (
                     <label key={key}>
                       {label}
-                      <select
-                        required={field.required}
-                        value={values[key] ?? ''}
-                        onChange={(e) =>
-                          setValues((prev) => ({
-                            ...prev,
-                            [key]: e.target.value,
-                          }))
-                        }
-                      >
-                        <option value="">Seleccionar...</option>
-                        <option value="true">Si</option>
-                        <option value="false">No</option>
-                      </select>
+                      <div className="boolean-toggle-group" role="group" aria-label={label}>
+                        <button
+                          type="button"
+                          className={`boolean-toggle-button ${selectedValue === 'true' ? 'is-active' : ''}`}
+                          onClick={() =>
+                            setFormValues((prev) => ({
+                              ...prev,
+                              [key]: 'true',
+                            }))
+                          }
+                        >
+                          Sí
+                        </button>
+                        <button
+                          type="button"
+                          className={`boolean-toggle-button ${selectedValue === 'false' ? 'is-active' : ''}`}
+                          onClick={() =>
+                            setFormValues((prev) => ({
+                              ...prev,
+                              [key]: 'false',
+                            }))
+                          }
+                        >
+                          No
+                        </button>
+                      </div>
                     </label>
                   )
                 }
 
                 if (type === 'string_array' || (type === 'text' && (field.maxLen ?? 0) > 120)) {
+                  if (type === 'string_array') {
+                    const items = parseStringArrayValues(formValues[key] ?? '')
+                    const draft = stringArrayDrafts[key] ?? ''
+                    const uiCopy = stringArrayUiCopy(stepId, field.id, sessionCount)
+                    const currentError = stringArrayErrors[key] ?? null
+                    const canAddMore = !uiCopy.maxItems || items.length < uiCopy.maxItems
+                    const addItem = () => {
+                      const nextValue = draft.trim()
+                      if (!nextValue) {
+                        return
+                      }
+                      if (uiCopy.maxItems && items.length >= uiCopy.maxItems) {
+                        setStringArrayErrors((prev) => ({
+                          ...prev,
+                          [key]: `Llegaste al máximo de ${uiCopy.maxItems} elementos.`,
+                        }))
+                        return
+                      }
+                      if (uiCopy.maxWordsPerItem) {
+                        const words = countWords(nextValue)
+                        if (words > uiCopy.maxWordsPerItem) {
+                          setStringArrayErrors((prev) => ({
+                            ...prev,
+                            [key]: `Cada elemento admite máximo ${uiCopy.maxWordsPerItem} palabras (actual: ${words}).`,
+                          }))
+                          return
+                        }
+                      }
+                      const nextItems = [...items, nextValue]
+                      setFormValues((prev) => ({
+                        ...prev,
+                        [key]: nextItems.join('\n'),
+                      }))
+                      setStringArrayDrafts((prev) => ({
+                        ...prev,
+                        [key]: '',
+                      }))
+                      setStringArrayErrors((prev) => ({
+                        ...prev,
+                        [key]: '',
+                      }))
+                    }
+
+                    return (
+                      <label key={key}>
+                        {label}
+                        <div className="string-array-builder">
+                          <div className="row">
+                            <input
+                              type="text"
+                              value={draft}
+                              placeholder={uiCopy.placeholder}
+                              onChange={(e) =>
+                                {
+                                  setStringArrayDrafts((prev) => ({
+                                    ...prev,
+                                    [key]: e.target.value,
+                                  }))
+                                  if (currentError) {
+                                    setStringArrayErrors((prev) => ({
+                                      ...prev,
+                                      [key]: '',
+                                    }))
+                                  }
+                                }
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault()
+                                  addItem()
+                                }
+                              }}
+                            />
+                            <button type="button" onClick={addItem} disabled={!canAddMore}>
+                              {uiCopy.addButtonLabel}
+                            </button>
+                          </div>
+                          <p className="hint">
+                            {uiCopy.itemsLabel}:{' '}
+                            {uiCopy.maxItems ? `${items.length}/${uiCopy.maxItems}` : items.length}
+                          </p>
+                          {uiCopy.rulesHint ? <p className="hint">{uiCopy.rulesHint}</p> : null}
+                          {uiCopy.exampleHint ? <p className="hint">{uiCopy.exampleHint}</p> : null}
+                          <ErrorBanner message={currentError} />
+                          {items.length > 0 ? (
+                            <div className="string-array-items">
+                              {items.map((item, itemIndex) => (
+                                <div className="string-array-item" key={`${key}-item-${itemIndex.toString()}`}>
+                                  <span>{item}</span>
+                                  <button
+                                    type="button"
+                                    className="landing-ghost-button"
+                                    onClick={() => {
+                                      const nextItems = items.filter((_, idx) => idx !== itemIndex)
+                                      setFormValues((prev) => ({
+                                        ...prev,
+                                        [key]: nextItems.join('\n'),
+                                      }))
+                                      setStringArrayErrors((prev) => ({
+                                        ...prev,
+                                        [key]: '',
+                                      }))
+                                    }}
+                                  >
+                                    Quitar
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </label>
+                    )
+                  }
+
                   return (
                     <label key={key}>
                       {label}
                       <textarea
-                        value={values[key] ?? ''}
+                        value={formValues[key] ?? ''}
                         required={field.required}
                         onChange={(e) =>
-                          setValues((prev) => ({
+                          setFormValues((prev) => ({
                             ...prev,
                             [key]: e.target.value,
                           }))
                         }
                       />
+                    </label>
+                  )
+                }
+
+                if (isInstagramOptionalField || isWebsiteOptionalField) {
+                  const rawValue = formValues[key] ?? ''
+                  const selectedChoice =
+                    optionalFieldChoices[key] ??
+                    (rawValue.trim().toUpperCase() === 'NO' ? 'no' : rawValue.trim() ? 'yes' : 'no')
+                  const showInput = selectedChoice === 'yes'
+                  const inputType = isWebsiteOptionalField ? 'url' : 'text'
+                  const inputPlaceholder = isWebsiteOptionalField
+                    ? 'https://tu-sitio.com'
+                    : '@usuario o enlace de Instagram'
+
+                  return (
+                    <label key={key}>
+                      {label}
+                      <div className="boolean-toggle-group" role="group" aria-label={label}>
+                        <button
+                          type="button"
+                          className={`boolean-toggle-button ${selectedChoice === 'yes' ? 'is-active' : ''}`}
+                          onClick={() => {
+                            setOptionalFieldChoices((prev) => ({ ...prev, [key]: 'yes' }))
+                            if ((formValues[key] ?? '').trim().toUpperCase() === 'NO') {
+                              setFormValues((prev) => ({
+                                ...prev,
+                                [key]: '',
+                              }))
+                            }
+                          }}
+                        >
+                          Sí
+                        </button>
+                        <button
+                          type="button"
+                          className={`boolean-toggle-button ${selectedChoice === 'no' ? 'is-active' : ''}`}
+                          onClick={() => {
+                            setOptionalFieldChoices((prev) => ({ ...prev, [key]: 'no' }))
+                            setFormValues((prev) => ({
+                              ...prev,
+                              [key]: 'NO',
+                            }))
+                          }}
+                        >
+                          No
+                        </button>
+                      </div>
+                      {showInput ? (
+                        <input
+                          type={inputType}
+                          value={rawValue.trim().toUpperCase() === 'NO' ? '' : rawValue}
+                          required
+                          minLength={field.minLen}
+                          maxLength={field.maxLen}
+                          placeholder={inputPlaceholder}
+                          onChange={(e) =>
+                            setFormValues((prev) => ({
+                              ...prev,
+                              [key]: e.target.value,
+                            }))
+                          }
+                        />
+                      ) : (
+                        <p className="hint">Se omitirá Instagram en el documento informativo PDF.</p>
+                      )}
                     </label>
                   )
                 }
@@ -618,14 +1048,14 @@ preguntas imprescindibles: Aplicar transferencia de fuerza ; Justificar decision
                                 ? 'tel'
                                 : 'text'
                       }
-                      value={values[key] ?? ''}
+                      value={formValues[key] ?? ''}
                       required={field.required}
                       min={field.min}
                       max={field.max}
                       minLength={field.minLen}
                       maxLength={field.maxLen}
                       onChange={(e) =>
-                        setValues((prev) => ({
+                        setFormValues((prev) => ({
                           ...prev,
                           [key]: e.target.value,
                         }))

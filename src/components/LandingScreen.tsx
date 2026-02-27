@@ -48,7 +48,7 @@ export function LandingScreen({ loading, isAuthenticated, onStartCreation, onGoA
       </header>
 
       <section className="landing-hero">
-        <p className="landing-chip">Plataforma de diseno asistido para talleres</p>
+        <p className="landing-chip">Plataforma de diseno asistido para unidades didacticas y workshops</p>
         <h1>Disena workshops de alto nivel en minutos, no en dias.</h1>
         <p className="landing-lead">
           Workshopia combina guiado paso a paso, validaciones inteligentes y generacion automatica

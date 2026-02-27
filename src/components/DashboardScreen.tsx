@@ -21,7 +21,7 @@ type Props = {
   onGoPurchase: () => void
   onGoProfile: () => void
   onGoHistory: () => void
-  onChangePassword: () => Promise<void>
+  onChangePassword: (newPassword: string) => Promise<void>
   onLogout: () => void
 }
 
@@ -47,6 +47,9 @@ export function DashboardScreen({
   onLogout,
 }: Props) {
   const [selectedWorkshop, setSelectedWorkshop] = useState<WorkshopRecord | null>(null)
+  const [showPasswordModal, setShowPasswordModal] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [passwordError, setPasswordError] = useState<string | null>(null)
 
   const statusLabel = (status: string) => {
     if (status === 'waiting_admin') return 'Esperando revisión de admin'
@@ -61,6 +64,28 @@ export function DashboardScreen({
     }
     return buildWorkshopSummary(selectedWorkshop)
   }, [selectedWorkshop])
+
+  const closePasswordModal = () => {
+    setShowPasswordModal(false)
+    setNewPassword('')
+    setPasswordError(null)
+  }
+
+  const submitPasswordChange = async () => {
+    const trimmed = newPassword.trim()
+    if (trimmed.length < 6) {
+      setPasswordError('La contrasena debe tener al menos 6 caracteres.')
+      return
+    }
+
+    setPasswordError(null)
+    try {
+      await onChangePassword(trimmed)
+      closePasswordModal()
+    } catch {
+      // El error de backend se muestra en banner global.
+    }
+  }
 
   return (
     <Layout
@@ -102,7 +127,14 @@ export function DashboardScreen({
           <button type="button" onClick={onGoHistory}>
             Ver historial
           </button>
-          <button type="button" onClick={() => void onChangePassword()} disabled={loading}>
+          <button
+            type="button"
+            onClick={() => {
+              setShowPasswordModal(true)
+              setPasswordError(null)
+            }}
+            disabled={loading}
+          >
             Cambiar contrasena
           </button>
         </div>
@@ -232,6 +264,46 @@ export function DashboardScreen({
                 <p>
                   <strong>Creado:</strong> {formatEpoch(workshopSummary.createdAtEpoch) ?? '-'}
                 </p>
+              </div>
+            </div>
+          </article>
+        </div>
+      ) : null}
+
+      {showPasswordModal ? (
+        <div
+          className="landing-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Cambiar contrasena"
+          onClick={closePasswordModal}
+        >
+          <article className="landing-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="landing-modal-header">
+              <h3>Cambiar contrasena</h3>
+              <button type="button" className="landing-ghost-button" onClick={closePasswordModal}>
+                Cerrar
+              </button>
+            </header>
+            <div className="landing-modal-body stack">
+              <label>
+                Nueva contrasena (min 6)
+                <input
+                  type="password"
+                  minLength={6}
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  autoFocus
+                />
+              </label>
+              <ErrorBanner message={passwordError} />
+              <div className="row">
+                <button type="button" onClick={() => void submitPasswordChange()} disabled={loading}>
+                  Guardar
+                </button>
+                <button type="button" className="landing-ghost-button" onClick={closePasswordModal}>
+                  Cancelar
+                </button>
               </div>
             </div>
           </article>

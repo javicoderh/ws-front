@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
@@ -16,7 +16,7 @@ import { useAuth } from './context/AuthContext'
 import { useHelper } from './context/HelperContext'
 import { useTokens } from './context/TokensContext'
 import { useWorkshops } from './context/WorkshopsContext'
-import type { GenericRecord, Profile, WorkshopRecord } from './types/backend'
+import type { GenericRecord, HelperState, Profile, WorkshopRecord } from './types/backend'
 import { formatBackendError, getErrorCode } from './utils/backendErrors'
 
 type DashboardNotice = 'continue_session' | 'no_credits' | null
@@ -48,6 +48,22 @@ function parseProfile(payload: unknown): Profile | null {
   }
 }
 
+function sessionHasProgress(session: HelperState): boolean {
+  const firstStepId = session.steps[0]?.stepId
+  return (
+    session.steps.some((step) => step.status === 'validated' || step.attempt > 0) ||
+    Boolean(firstStepId && session.currentStepId !== firstStepId)
+  )
+}
+
+function jobIdFromWorkshopRaw(raw: Record<string, unknown>): string {
+  return (
+    (typeof raw.jobId === 'string' && raw.jobId) ||
+    (typeof raw.job_id === 'string' && raw.job_id) ||
+    ''
+  )
+}
+
 function ProtectedRoute({ isAuthenticated, children }: { isAuthenticated: boolean; children: ReactNode }) {
   if (!isAuthenticated) {
     return <Navigate to="/auth" replace />
@@ -70,6 +86,12 @@ function App() {
   const [profileLoading, setProfileLoading] = useState(false)
   const [dashboardNotice, setDashboardNotice] = useState<DashboardNotice>(null)
   const [pendingHelperSessionId, setPendingHelperSessionId] = useState<string | null>(null)
+  const refreshBalance = tokens.refreshBalance
+  const helperReset = helper.reset
+  const helperLoadUserSessions = helper.loadUserSessions
+  const helperLoadMyEscalatedCases = helper.loadMyEscalatedCases
+  const workshopsLoadList = workshops.loadList
+  const workshopsLoadHistory = workshops.loadHistory
 
   const generatedWorkshops = useMemo(() => {
     const isGenerated = (item: WorkshopRecord) => {
@@ -101,7 +123,7 @@ function App() {
     })
   }, [workshops.history, workshops.list])
 
-  const loadProfile = async () => {
+  const loadProfile = useCallback(async () => {
     if (!auth.idToken) {
       return null
     }
@@ -129,9 +151,9 @@ function App() {
     } finally {
       setProfileLoading(false)
     }
-  }
+  }, [auth.idToken, navigate, request])
 
-  const upsertProfile = async (draft: {
+  const upsertProfile = useCallback(async (draft: {
     username: string
     displayName: string
     phoneE164: string
@@ -159,7 +181,7 @@ function App() {
       })
       const parsed = parseProfile(payload)
       setProfile(parsed)
-      await tokens.refreshBalance()
+      await refreshBalance()
       navigate('/dashboard')
     } catch (err) {
       const message = formatBackendError(err, 'No se pudo guardar perfil')
@@ -168,11 +190,11 @@ function App() {
     } finally {
       setProfileLoading(false)
     }
-  }
+  }, [auth.idToken, navigate, refreshBalance, request])
 
   useEffect(() => {
     if (!auth.isAuthenticated) {
-      helper.reset()
+      helperReset()
       setProfile(null)
       setDashboardNotice(null)
       setPendingHelperSessionId(null)
@@ -184,7 +206,7 @@ function App() {
         .then((p) => {
           if (p) {
             navigate('/dashboard', { replace: true })
-            return tokens.refreshBalance()
+            return refreshBalance()
           }
           return Promise.resolve()
         })
@@ -192,7 +214,14 @@ function App() {
           // Errors visible through context states.
         })
     }
-  }, [auth.isAuthenticated, location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [
+    auth.isAuthenticated,
+    helperReset,
+    loadProfile,
+    location.pathname,
+    navigate,
+    refreshBalance,
+  ])
 
   useEffect(() => {
     const params = new URLSearchParams(location.search)
@@ -209,14 +238,14 @@ function App() {
 
     void tokens
       .confirmCheckout(paymentSessionId ?? undefined)
-      .then(() => tokens.refreshBalance())
+      .then(() => refreshBalance())
       .then(() => {
         navigate('/dashboard', { replace: true })
       })
       .catch(() => {
         // Error visible through tokens context.
       })
-  }, [auth.isAuthenticated, location.search, navigate, tokens])
+  }, [auth.isAuthenticated, location.search, navigate, refreshBalance, tokens])
 
   useEffect(() => {
     if (location.pathname !== '/generation' || !helper.jobId) {
@@ -239,21 +268,20 @@ function App() {
       return
     }
     void Promise.all([
-      helper.loadUserSessions(),
-      helper.loadMyEscalatedCases(),
-      workshops.loadList(),
-      workshops.loadHistory(),
+      helperLoadUserSessions(),
+      helperLoadMyEscalatedCases(),
+      workshopsLoadList(),
+      workshopsLoadHistory(),
     ]).catch(() => {
       // Error visible through helper/workshops context.
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     auth.isAuthenticated,
-    helper.loadMyEscalatedCases,
-    helper.loadUserSessions,
+    helperLoadMyEscalatedCases,
+    helperLoadUserSessions,
     location.pathname,
-    workshops.loadHistory,
-    workshops.loadList,
+    workshopsLoadHistory,
+    workshopsLoadList,
   ])
 
   useEffect(() => {
@@ -279,41 +307,27 @@ function App() {
   }, [auth.error, helper.error, profileError, tokens.error, workshops.error])
 
   const handleStartHelper = async () => {
-    setDashboardNotice(null)
-    setPendingHelperSessionId(null)
-    try {
-      const started = await helper.startSession()
-      const firstStepId = started.steps[0]?.stepId
-      const hasProgress =
-        started.steps.some((step) => step.status === 'validated' || step.attempt > 0) ||
-        Boolean(firstStepId && started.currentStepId !== firstStepId)
-
-      if (hasProgress) {
+    const continueFromStartedSession = async (started: HelperState) => {
+      if (sessionHasProgress(started)) {
         setPendingHelperSessionId(started.sessionId)
         setDashboardNotice('continue_session')
         return
       }
-
       await helper.loadState(started.sessionId)
       navigate('/helper')
+    }
+
+    setDashboardNotice(null)
+    setPendingHelperSessionId(null)
+    try {
+      await continueFromStartedSession(await helper.startSession())
     } catch (error) {
       const code = getErrorCode(error)
       if (code === 'WORKSHOP_TOKENS_INSUFFICIENT') {
         try {
           await tokens.confirmCheckout()
           await tokens.refreshBalance()
-          const startedAfterTopup = await helper.startSession()
-          const firstStepId = startedAfterTopup.steps[0]?.stepId
-          const hasProgress =
-            startedAfterTopup.steps.some((step) => step.status === 'validated' || step.attempt > 0) ||
-            Boolean(firstStepId && startedAfterTopup.currentStepId !== firstStepId)
-          if (hasProgress) {
-            setPendingHelperSessionId(startedAfterTopup.sessionId)
-            setDashboardNotice('continue_session')
-            return
-          }
-          await helper.loadState(startedAfterTopup.sessionId)
-          navigate('/helper')
+          await continueFromStartedSession(await helper.startSession())
           return
         } catch {
           setDashboardNotice('no_credits')
@@ -451,10 +465,8 @@ function App() {
                   navigate('/history'),
                 )
               }}
-              onChangePassword={async () => {
-                const nextPassword = window.prompt('Nueva contrasena (min 6):')
-                if (!nextPassword) return
-                await auth.changePassword(nextPassword)
+              onChangePassword={async (newPassword) => {
+                await auth.changePassword(newPassword)
               }}
               onLogout={() => {
                 auth.logout()
@@ -562,10 +574,7 @@ function App() {
               }}
               onOpenGeneration={async (workshop) => {
                 const raw = workshop.raw as Record<string, unknown>
-                const jobId =
-                  (typeof raw.jobId === 'string' && raw.jobId) ||
-                  (typeof raw.job_id === 'string' && raw.job_id) ||
-                  ''
+                const jobId = jobIdFromWorkshopRaw(raw)
                 if (!jobId) {
                   return
                 }
@@ -574,10 +583,7 @@ function App() {
               }}
               onGenerateNewVersion={async (workshop) => {
                 const raw = workshop.raw as Record<string, unknown>
-                const jobId =
-                  (typeof raw.jobId === 'string' && raw.jobId) ||
-                  (typeof raw.job_id === 'string' && raw.job_id) ||
-                  ''
+                const jobId = jobIdFromWorkshopRaw(raw)
                 if (!jobId) {
                   throw new Error('No se encontró jobId para iniciar nueva versión')
                 }
